@@ -1,28 +1,21 @@
 import os
 import pickle
-import random
 import numpy as np
+import pandas as pd
 from sklearn.linear_model import LinearRegression
-from app.data.generate_data import generate_distance_matrix
 
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "delay_model.pkl")
-
-
-def build_synthetic_dataset(samples=200):
-    X = []
-    y = []
-    for _ in range(samples):
-        distance = random.uniform(1.0, 100.0)
-        traffic_level = random.uniform(0.8, 1.8)
-        base_delay = distance * 0.05
-        delay = base_delay * traffic_level + random.uniform(0.0, 2.0)
-        X.append([distance, traffic_level])
-        y.append(delay)
-    return np.array(X), np.array(y)
+DATA_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "data", "historical_delays.csv")
 
 
 def train_delay_model():
-    X, y = build_synthetic_dataset()
+    if not os.path.exists(DATA_PATH):
+        raise FileNotFoundError(f"Production dataset missing at {DATA_PATH}. Please provide a large-scale training dataset.")
+    
+    df = pd.read_csv(DATA_PATH)
+    X = df[['distance', 'traffic_level']].values
+    y = df['delay'].values
+    
     model = LinearRegression()
     model.fit(X, y)
     with open(MODEL_PATH, "wb") as f:

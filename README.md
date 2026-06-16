@@ -60,8 +60,8 @@ PYTHONPATH=. python3 -m uvicorn app.main:app --reload --host 127.0.0.1 --port 80
 4. Start the Streamlit frontend:
 
 ```bash
-cd /Users/sagarshingare/Documents/amd-hackathon-project-final
-streamlit run frontend/app.py
+cd /Users/sagarshingare/Documents/amd-hackathon-project-final # Use python -m streamlit for robust pathing
+python3 -m streamlit run frontend/app.py
 ```
 
 ## Demo Flow

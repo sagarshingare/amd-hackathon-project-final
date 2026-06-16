@@ -1,4 +1,4 @@
-from app.data.generate_data import generate_distance_matrix
+from app.data.real_data import generate_distance_matrix
 
 class PlannerAgent:
     def plan_routes(self, network):

@@ -8,3 +8,6 @@ matplotlib
 ortools
 requests
 python-multipart
+folium
+streamlit-folium
+kagglehub
