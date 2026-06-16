@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+streamlit
+scikit-learn
+pandas
+numpy
+matplotlib
+ortools
+requests
+python-multipart
