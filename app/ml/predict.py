@@ -2,7 +2,7 @@ import os
 import pickle
 import numpy as np
 from app.ml.train import load_delay_model
-from app.data.generate_data import generate_distance_matrix
+from app.data.real_data import generate_distance_matrix
 
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "delay_model.pkl")
 

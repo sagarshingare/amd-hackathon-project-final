@@ -41,7 +41,7 @@ def build_distance_matrix(locations):
     return matrix
 
 
-def solve_vrp(locations, orders, fleet, fuel_price, predicted_delays=None):
+def solve_vrp(locations, orders, fleet, fuel_price, predicted_delays=None, time_limit_seconds=2, depot_time_window=(0, 1440)):
     distance_matrix = build_distance_matrix(locations)
     num_locations = len(locations)
     num_vehicles = len(fleet)
@@ -64,10 +64,50 @@ def solve_vrp(locations, orders, fleet, fuel_price, predicted_delays=None):
         if predicted_delays is not None:
             delay_cost = int(predicted_delays[to_node] * 100)
         return int(distance * fuel_price + delay_cost)
-        return int(distance * fuel_price + delay_cost)
 
     transit_callback_index = routing.RegisterTransitCallback(distance_callback)
     routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
+
+    # --- Add Time Dimension for Time Windows ---
+    
+    # Service time at each location (in minutes)
+    service_times = [0] * num_locations # 0 for depot
+    for order in orders:
+        service_times[order["location_index"]] = 15 # 15 minutes for all deliveries
+
+    def time_callback(from_index, to_index):
+        """Returns the total time between the two nodes."""
+        from_node = manager.IndexToNode(from_index)
+        to_node = manager.IndexToNode(to_index)
+        
+        # Travel time = distance / speed. Assume avg speed of 20 mph.
+        # Travel time in minutes = (distance_miles / 20) * 60 = distance_miles * 3
+        distance_miles = distance_matrix[from_node][to_node] / 100.0
+        travel_time = int(distance_miles * 3)
+        
+        # Add service time for the from_node
+        service_time = service_times[from_node]
+        return travel_time + service_time
+
+    time_callback_index = routing.RegisterTransitCallback(time_callback)
+    
+    routing.AddDimension(
+        time_callback_index,
+        30,      # slack_max: 30 minutes waiting time allowed at each location
+        3000,    # vehicle_capacity: max total time per vehicle (50 hours)
+        False,   # fix_start_cumul_to_zero: Don't force start time to be 0
+        "Time"
+    )
+    time_dimension = routing.GetDimensionOrDie("Time")
+
+    # Add time window constraints for each order location.
+    for order in orders:
+        index = manager.NodeToIndex(order["location_index"])
+        time_dimension.CumulVar(index).SetRange(order["time_window_start"], order["time_window_end"])
+
+    # Add time window constraint for the depot
+    depot_index = manager.NodeToIndex(depot)
+    time_dimension.CumulVar(depot_index).SetRange(depot_time_window[0], depot_time_window[1])
 
     demand_callback_index = routing.RegisterUnaryTransitCallback(lambda index: demands[manager.IndexToNode(index)])
     routing.AddDimensionWithVehicleCapacity(
@@ -81,7 +121,7 @@ def solve_vrp(locations, orders, fleet, fuel_price, predicted_delays=None):
     search_parameters = pywrapcp.DefaultRoutingSearchParameters()
     search_parameters.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
     search_parameters.local_search_metaheuristic = routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
-    search_parameters.time_limit.seconds = 2
+    search_parameters.time_limit.seconds = time_limit_seconds
     search_parameters.log_search = False
 
     solution = routing.SolveWithParameters(search_parameters)

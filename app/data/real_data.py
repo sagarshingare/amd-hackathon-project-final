@@ -8,7 +8,8 @@ import os
 
 DATA_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "data", "deliveries.csv")
 
-def load_dataset_from_csv(filepath=DATA_PATH, num_orders=10):
+
+def load_dataset_from_csv(filepath=DATA_PATH, num_orders=10, num_vehicles=3, vehicle_capacity=150):
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"Production dataset not found at {filepath}. Please add the dataset here.")
 
@@ -16,6 +17,13 @@ def load_dataset_from_csv(filepath=DATA_PATH, num_orders=10):
     
     locations = list(zip(df['latitude'], df['longitude']))
     
+    # Extract depot info from the first row
+    depot_row = df.iloc[0]
+    depot_time_window = (
+        int(depot_row.get('time_window_start', 0)),
+        int(depot_row.get('time_window_end', 1440))
+    )
+
     orders = []
     for idx in range(1, len(locations)):
         row = df.iloc[idx]
@@ -25,19 +33,21 @@ def load_dataset_from_csv(filepath=DATA_PATH, num_orders=10):
             "demand": int(row.get('demand', 1)),
             "address": str(row.get('address', f"Location {idx}")),
             "coordinates": locations[idx],
+            "time_window_start": int(row.get('time_window_start', 0)),
+            "time_window_end": int(row.get('time_window_end', 1440)), # Default to full day
         })
 
     fleet = [
-        {"vehicle_id": "Van1", "capacity": 50, "type": "van"},
-        {"vehicle_id": "Van2", "capacity": 50, "type": "van"},
-        {"vehicle_id": "Truck1", "capacity": 100, "type": "truck"},
+        {"vehicle_id": f"V{i}", "capacity": vehicle_capacity, "type": "truck"}
+        for i in range(num_vehicles)
     ]
     
     return {
         "locations": locations,
         "orders": orders,
         "fleet": fleet,
-        "fuel_price": 1.5,
+        "depot_time_window": depot_time_window,
+        "fuel_price": 1.0,
         "delay_factor": 1.0,
         "city": str(df.iloc[0].get('city', 'Unknown')),
         "dataset_source": "Production CSV",
@@ -69,8 +79,8 @@ def generate_distance_matrix(locations):
     return matrix
 
 
-def generate_delivery_network(source="NYC", num_orders=10):
+def generate_delivery_network(source="NYC", num_orders=10, num_vehicles=3, vehicle_capacity=150):
     """
     Load a delivery network from production CSV data.
     """
-    return load_dataset_from_csv(DATA_PATH, num_orders)
+    return load_dataset_from_csv(DATA_PATH, num_orders, num_vehicles, vehicle_capacity)
