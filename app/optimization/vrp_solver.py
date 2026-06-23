@@ -3,10 +3,6 @@ from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
 
 
-def euclidean_distance(a, b):
-    return math.hypot(a[0] - b[0], a[1] - b[1])
-
-
 def haversine_distance(lat1, lon1, lat2, lon2):
     """Calculate distance in miles using Haversine formula for geographic coordinates."""
     R = 3959  # Earth radius in miles
@@ -34,15 +30,13 @@ def build_distance_matrix(locations):
                 lat2, lon2 = locations[j]
                 distance = haversine_distance(lat1, lon1, lat2, lon2)
                 matrix[i][j] = int(distance * 100)  # Convert to centimiles for precision
-            else:
-                distance = euclidean_distance(locations[i], locations[j])
-                matrix[i][j] = int(distance * 10)
     
     return matrix
 
 
-def solve_vrp(locations, orders, fleet, fuel_price, predicted_delays=None, time_limit_seconds=2, depot_time_window=(0, 1440)):
-    distance_matrix = build_distance_matrix(locations)
+def solve_vrp(locations, orders, fleet, fuel_price, driver_cost_per_minute=0.42, predicted_delays=None, distance_matrix=None, time_limit_seconds=2, depot_time_window=(0, 1440)):
+    if distance_matrix is None:
+        distance_matrix = build_distance_matrix(locations)
     num_locations = len(locations)
     num_vehicles = len(fleet)
     depot = 0
@@ -56,18 +50,6 @@ def solve_vrp(locations, orders, fleet, fuel_price, predicted_delays=None, time_
     manager = pywrapcp.RoutingIndexManager(num_locations, num_vehicles, depot)
     routing = pywrapcp.RoutingModel(manager)
 
-    def distance_callback(from_index, to_index):
-        from_node = manager.IndexToNode(from_index)
-        to_node = manager.IndexToNode(to_index)
-        distance = distance_matrix[from_node][to_node]
-        delay_cost = 0
-        if predicted_delays is not None:
-            delay_cost = int(predicted_delays[to_node] * 100)
-        return int(distance * fuel_price + delay_cost)
-
-    transit_callback_index = routing.RegisterTransitCallback(distance_callback)
-    routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
-
     # --- Add Time Dimension for Time Windows ---
     
     # Service time at each location (in minutes)
@@ -80,10 +62,13 @@ def solve_vrp(locations, orders, fleet, fuel_price, predicted_delays=None, time_
         from_node = manager.IndexToNode(from_index)
         to_node = manager.IndexToNode(to_index)
         
-        # Travel time = distance / speed. Assume avg speed of 20 mph.
-        # Travel time in minutes = (distance_miles / 20) * 60 = distance_miles * 3
-        distance_miles = distance_matrix[from_node][to_node] / 100.0
-        travel_time = int(distance_miles * 3)
+        # Use the ML-predicted delay for travel time if available
+        if predicted_delays:
+            travel_time = int(predicted_delays[from_node][to_node])
+        else:
+            # Fallback to simple distance-based calculation (assume 20 mph)
+            distance_miles = distance_matrix[from_node][to_node] / 100.0
+            travel_time = int(distance_miles * 3)
         
         # Add service time for the from_node
         service_time = service_times[from_node]
@@ -99,6 +84,24 @@ def solve_vrp(locations, orders, fleet, fuel_price, predicted_delays=None, time_
         "Time"
     )
     time_dimension = routing.GetDimensionOrDie("Time")
+
+    # --- Define Financially-Grounded Cost Function ---
+    def cost_callback(from_index, to_index):
+        from_node = manager.IndexToNode(from_index)
+        to_node = manager.IndexToNode(to_index)
+        
+        # Fuel Cost (distance-based)
+        distance_miles = distance_matrix[from_node][to_node] / 100.0
+        fuel_cost = distance_miles * fuel_price
+        
+        # Labor Cost (time-based)
+        travel_time_minutes = time_callback(from_index, to_index)
+        labor_cost = travel_time_minutes * driver_cost_per_minute
+        
+        return int((fuel_cost + labor_cost) * 100) # Return cost in cents
+
+    cost_callback_index = routing.RegisterTransitCallback(cost_callback)
+    routing.SetArcCostEvaluatorOfAllVehicles(cost_callback_index)
 
     # Add time window constraints for each order location.
     for order in orders:
@@ -126,27 +129,38 @@ def solve_vrp(locations, orders, fleet, fuel_price, predicted_delays=None, time_
 
     solution = routing.SolveWithParameters(search_parameters)
     routes = []
-    total_cost = 0
+    total_cost_cents = 0
+    total_fuel_cost_cents = 0
+    total_labor_cost_cents = 0
 
     if solution:
+        total_cost_cents = solution.ObjectiveValue()
         for vehicle_id in range(num_vehicles):
             index = routing.Start(vehicle_id)
             route = []
-            route_distance = 0
+            route_time = 0
             while not routing.IsEnd(index):
                 node = manager.IndexToNode(index)
                 route.append(node)
                 previous_index = index
                 index = solution.Value(routing.NextVar(index))
                 if not routing.IsEnd(index):
-                    next_node = manager.IndexToNode(index)
-                    route_distance += distance_matrix[node][next_node]
+                    # Calculate fuel and labor cost for this segment
+                    from_node = node
+                    to_node = manager.IndexToNode(index)
+                    distance_miles = distance_matrix[from_node][to_node] / 100.0
+                    total_fuel_cost_cents += (distance_miles * fuel_price) * 100
+                    
+                    segment_time = time_callback(previous_index, index)
+                    total_labor_cost_cents += (segment_time * driver_cost_per_minute) * 100
+            
             if len(route) > 1:
                 routes.append(route)
-        total_cost = solution.ObjectiveValue()
-
+        
     return {
         "routes": routes,
-        "total_cost": total_cost,
+        "total_cost": total_cost_cents / 100.0 if solution else 0,
+        "fuel_cost": total_fuel_cost_cents / 100.0 if solution else 0,
+        "labor_cost": total_labor_cost_cents / 100.0 if solution else 0,
         "distance_matrix": distance_matrix,
     }

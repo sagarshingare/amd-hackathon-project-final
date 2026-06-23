@@ -15,25 +15,25 @@ A production-ready open-source agentic AI system for logistics route optimizatio
 
 ```text
 app/
+├── __init__.py
 ├── main.py
+├── api/
+│   └── routes.py
 ├── agents/
+│   ├── __init__.py
+│   ├── orchestrator.py
 │   ├── planner.py
 │   ├── optimizer.py
-│   ├── disruption.py
-│   ├── replanner.py
-│   └── orchestrator.py
-├── optimization/
-│   └── vrp_solver.py
+│   └── replanner.py
+├── data/
+│   └── real_data.py
 ├── ml/
+│   ├── __init__.py
 │   ├── train.py
 │   └── predict.py
-├── data/
-│   └── generate_data.py
-├── utils/
-│   ├── cost.py
-│   └── features.py
-└── api/
-    └── routes.py
+├── optimization/
+│   └── vrp_solver.py
+└── session.py
 frontend/
 └── app.py
 requirements.txt

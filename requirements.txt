@@ -11,3 +11,5 @@ python-multipart
 folium
 streamlit-folium
 kagglehub
+xgboost
+altair

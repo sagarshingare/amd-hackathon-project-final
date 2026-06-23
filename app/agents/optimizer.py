@@ -12,6 +12,9 @@ class OptimizerAgent:
             orders=network["orders"],
             fleet=network["fleet"],
             fuel_price=network["fuel_price"],
+            driver_cost_per_minute=network.get("driver_cost_per_minute", 0.42),
             predicted_delays=predicted_delays,
+            distance_matrix=network.get("distance_matrix"),
+            depot_time_window=network.get("depot_time_window", (0, 1440))
         )
         return solver_result

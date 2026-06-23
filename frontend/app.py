@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 import folium
 from streamlit_folium import folium_static
-import matplotlib.pyplot as plt
+import altair as alt
 from pathlib import Path
 import os
 
@@ -23,6 +23,12 @@ else:
     st.warning("No local data/deliveries.csv found. Ensure the dataset is present or optimization may fail.")
     df = None
 
+# Initialize session state for holding the API session_id
+if 'session_id' not in st.session_state:
+    st.session_state.session_id = None
+if 'results' not in st.session_state:
+    st.session_state.results = None
+
 col1, col2 = st.columns([1, 2])
 with col1:
     st.header("Controls")
@@ -30,18 +36,11 @@ with col1:
     vehicle_capacity = st.number_input("Vehicle capacity", value=150, min_value=10, max_value=500)
     num_orders = st.number_input("Num orders (destinations)", value=25, min_value=5, max_value=150)
     fuel_price = st.number_input("Fuel price (per unit distance)", value=1.0, step=0.1)
+    driver_hourly_wage = st.number_input("Driver Hourly Wage ($)", value=25.0, step=1.0)
     scenario_options = ["Random", "Accident on Route", "Severe Weather", "Road Block / Protest", "Fuel Price Spike"]
     selected_scenario = st.selectbox("Disruption Scenario", scenario_options)
     run_opt = st.button("Run initial optimization")
     run_sim = st.button("Simulate selected disruption")
-    show_map = st.checkbox("Show map (Folium)", value=True)
-
-with col2:
-    st.header("Dataset preview")
-    if df is not None:
-        st.dataframe(df.head())
-    else:
-        st.markdown("No local dataset found. Please place deliveries.csv in the data directory.")
 
 def format_time(minutes):
     """Converts minutes from midnight to HH:MM format."""
@@ -118,14 +117,33 @@ def plot_routes_on_map(routes_before, routes_after=None, center=None, locations=
     folium.LayerControl().add_to(m)
     return m
 
-def show_cost_charts(cost_before, cost_after):
-    labels = ["Before", "After"]
-    vals = [cost_before or 0, cost_after or 0]
-    fig, ax = plt.subplots()
-    ax.bar(labels, vals, color=["blue", "red"])
-    ax.set_ylabel("Total cost")
-    ax.set_title("Cost before vs after")
-    st.pyplot(fig)
+def show_comparison_charts(metrics_data):
+    """Renders separate interactive line charts for each metric."""
+    if not metrics_data:
+        return
+
+    df = pd.DataFrame(metrics_data)
+    
+    # Use columns for a better side-by-side layout
+    cols = st.columns(len(df['Metric'].unique()))
+    
+    for i, metric in enumerate(df['Metric'].unique()):
+        with cols[i]:
+            metric_df = df[df['Metric'] == metric]
+            metric_df_melted = metric_df.melt(id_vars=['Metric'], value_vars=['Before', 'After'], var_name='Scenario', value_name='Value')
+
+            chart = alt.Chart(metric_df_melted).mark_bar().encode(
+                x=alt.X('Scenario:N', title=None, axis=alt.Axis(labelAngle=0, grid=False)),
+                y=alt.Y('Value:Q', title=None, scale=alt.Scale(zero=False)),
+                color=alt.Color('Scenario:N', 
+                              scale=alt.Scale(domain=['Before', 'After'], range=['#1f77b4', '#d62728']), # Blue for Before, Red for After
+                              legend=None), # Legend is redundant with x-axis
+                tooltip=[alt.Tooltip('Value:Q', format='.2f')]
+            ).properties(
+                title=alt.TitleParams(text=metric, anchor='middle')
+            ).interactive()
+            
+            st.altair_chart(chart, use_container_width=True)
 
 def haversine_distance(lat1, lon1, lat2, lon2):
     """Calculate distance in miles using Haversine formula."""
@@ -137,6 +155,20 @@ def haversine_distance(lat1, lon1, lat2, lon2):
          np.sin(dlon/2)**2)
     c = 2 * np.arcsin(np.sqrt(a))
     return R * c
+
+def calculate_total_distance(routes, locations):
+    """Calculates the total distance for a set of routes."""
+    total_distance = 0
+    if not routes or not locations:
+        return 0
+    for route in routes:
+        sequence = route.get("route", [])
+        for j in range(len(sequence) - 1):
+            if sequence[j] < len(locations) and sequence[j+1] < len(locations):
+                loc1 = locations[sequence[j]]
+                loc2 = locations[sequence[j+1]]
+                total_distance += haversine_distance(loc1[0], loc1[1], loc2[0], loc2[1])
+    return total_distance
 
 def display_route_details(title, routes, locations):
     st.subheader(title)
@@ -152,90 +184,169 @@ def display_route_details(title, routes, locations):
                 total_distance += haversine_distance(loc1[0], loc1[1], loc2[0], loc2[1])
             st.metric("Route Distance", f"{total_distance:.2f} miles")
 
+def calculate_capacity_utilization(routes, orders, vehicle_capacity):
+    """Calculates the average capacity utilization across all vehicles."""
+    if not routes:
+        return 0
+    
+    total_utilization = 0
+    order_demands = {order['location_index']: order['demand'] for order in orders}
+    
+    for route in routes:
+        route_demand = sum(order_demands.get(node, 0) for node in route.get("route", []))
+        utilization = (route_demand / vehicle_capacity) * 100 if vehicle_capacity > 0 else 0
+        total_utilization += utilization
+        
+    return total_utilization / len(routes)
+
+def display_results(results_data):
+    """Renders the entire results dashboard using tabs."""
+    
+    # Extract data with defaults
+    cost_before = results_data.get("cost_before", 0)
+    cost_after = results_data.get("cost_after", cost_before) # Default to cost_before if no disruption
+    disruption = results_data.get("disruption")
+    decision_details = results_data.get("decision_details")
+    routes_before = results_data.get("routes_before") or results_data.get("routes", [])
+    routes_after = results_data.get("routes_after") if disruption else None
+    locations = results_data.get("locations", [])
+    orders = results_data.get("orders", [])
+    depot_time_window = results_data.get("depot_time_window")
+
+    # --- Main Dashboard Area ---
+    st.header("📊 Optimization Dashboard")
+
+    # Display disruption info if it exists
+    if disruption:
+        st.warning(f"**Disruption Event:** {disruption}")
+        st.info(f"**Agent Decision & Rationale:** {decision_details}")
+
+    # KPI Metrics
+    total_distance_before = calculate_total_distance(routes_before, locations)
+    total_distance_after = calculate_total_distance(routes_after, locations) if routes_after else total_distance_before
+    num_vehicles_after = len(routes_after) if routes_after else len(routes_before)
+    utilization_before = calculate_capacity_utilization(routes_before, orders, int(vehicle_capacity))
+    utilization_after = calculate_capacity_utilization(routes_after, orders, int(vehicle_capacity)) if routes_after else utilization_before
+    
+    # Extract total_cost from the cost dictionaries
+    total_cost_before_val = cost_before.get("total_cost", 0)
+    total_cost_after_val = cost_after.get("total_cost", total_cost_before_val)
+
+    kpi_cols = st.columns(6)
+    kpi_cols[0].metric("Initial Cost", f"{total_cost_before_val:.2f}")
+    kpi_cols[1].metric("Optimized Cost", f"{total_cost_after_val:.2f}", delta=f"{(total_cost_after_val - total_cost_before_val):.2f}")
+    kpi_cols[2].metric("Total Distance", f"{total_distance_after:.1f} mi", delta=f"{(total_distance_after - total_distance_before):.1f} mi")
+    kpi_cols[3].metric("Vehicles Used", num_vehicles_after, delta=num_vehicles_after - len(routes_before))
+    kpi_cols[4].metric("Avg. Capacity Use", f"{utilization_after:.1f}%", delta=f"{(utilization_after - utilization_before):.1f}%")
+    kpi_cols[5].metric("Total Deliveries", len(orders))
+
+    # --- Tabs for Detailed Views ---
+    map_tab, details_tab, chart_tab, data_tab = st.tabs(["🗺️ Route Map", "⚙️ Route Details", "📈 Comparison Chart", "📋 Raw Data"])
+
+    with map_tab:
+        st.subheader("Vehicle Route Visualization")
+        m = plot_routes_on_map(
+            routes_before, 
+            routes_after, 
+            locations=locations, 
+            orders=orders,
+            depot_time_window=depot_time_window
+        )
+        folium_static(m, width=950, height=600)
+
+    with details_tab:
+        if routes_after:
+            col_before, col_after = st.columns(2)
+            with col_before:
+                display_route_details("Route Analysis (Before Disruption)", routes_before, locations)
+            with col_after:
+                display_route_details("Route Analysis (After Disruption)", routes_after, locations)
+        else:
+            display_route_details("Initial Route Plan", routes_before, locations)
+
+    with chart_tab:
+        st.subheader("Metric Comparison")
+        # Calculate metrics for charting
+        num_orders_val = len(orders) if len(orders) > 0 else 1 # Avoid division by zero
+
+        num_vehicles_before = len(routes_before)
+        avg_dist_before = total_distance_before / num_orders_val
+
+        # If there's no 'after' route, use the 'before' values for comparison
+        if routes_after:
+            avg_dist_after = total_distance_after / num_orders_val
+        else:
+            avg_dist_after = avg_dist_before
+
+        # Extract cost breakdown if available
+        cost_details_before = results_data.get("cost_before", {})
+        cost_details_after = results_data.get("cost_after", cost_details_before)
+
+        metrics_to_plot = [
+            {'Metric': 'Total Cost ($)', 'Before': cost_details_before.get("total_cost", 0), 'After': cost_details_after.get("total_cost", 0)},
+            {'Metric': 'Total Distance (miles)', 'Before': total_distance_before, 'After': total_distance_after},
+            {'Metric': 'Fuel Cost ($)', 'Before': cost_details_before.get("fuel_cost", 0), 'After': cost_details_after.get("fuel_cost", 0)},
+            {'Metric': 'Labor Cost ($)', 'Before': cost_details_before.get("labor_cost", 0), 'After': cost_details_after.get("labor_cost", 0)},
+        ]
+        show_comparison_charts(metrics_to_plot)
+
+    with data_tab:
+        st.subheader("Raw Route Output")
+        if routes_after:
+            st.write("Routes Before Disruption:")
+            st.json(routes_before)
+            st.write("Routes After Disruption:")
+            st.json(routes_after)
+        else:
+            st.write("Initial Routes:")
+            st.json(routes_before)
+
+
 # handle initial optimize
 if run_opt:
     payload = {
         "num_vehicles": int(num_vehicles),
         "vehicle_capacity": int(vehicle_capacity),
         "fuel_price": float(fuel_price),
+        "driver_hourly_wage": float(driver_hourly_wage),
         "num_orders": int(num_orders),
         "source": "NYC"
     }
     try:
-        resp = requests.post(f"{BASE_URL}/optimize", json=payload, timeout=20)
-        resp.raise_for_status()
-        data = resp.json()
+        with st.spinner("Running initial optimization... This may take a moment for large datasets."):
+            resp = requests.post(f"{BASE_URL}/optimize", json=payload, timeout=60)
+            resp.raise_for_status()
+            data = resp.json()
+            st.session_state.session_id = data.get("session_id")
+            st.session_state.results = data
     except Exception as e:
         st.error(f"Optimize API error: {e}")
         st.stop()
 
-    # API may return 'routes' (before) and optionally cost_before
-    routes_before = data.get("routes") or data.get("routes_before") or []
-    cost_before = data.get("cost_before") or data.get("cost") or 0
-
-    st.subheader("Initial optimization")
-    st.metric("Total cost (initial)", f"{cost_before:.2f}")
-    st.write("Routes (initial):")
-    st.json(routes_before)
-
-    if show_map:
-        m = plot_routes_on_map(
-            routes_before, 
-            routes_after=None, 
-            locations=data.get("locations"), 
-            orders=data.get("orders"), 
-            depot_time_window=data.get("depot_time_window")
-        )
-        folium_static(m, width=900, height=600)
-
 # handle simulate / disruption
 if run_sim:
     try:
-        params = {}
-        if selected_scenario != "Random":
-            params["scenario"] = selected_scenario
-        resp = requests.get(f"{BASE_URL}/simulate", params=params, timeout=20)
-        resp.raise_for_status()
-        sim = resp.json()
+        if not st.session_state.session_id:
+            st.error("Please run an initial optimization first to start a session.")
+            st.stop()
+        with st.spinner(f"Simulating '{selected_scenario}' disruption and replanning..."):
+            params = {"session_id": st.session_state.session_id}
+            if selected_scenario != "Random":
+                params["scenario"] = selected_scenario
+            resp = requests.get(f"{BASE_URL}/simulate", params=params, timeout=60)
+            resp.raise_for_status()
+            sim_data = resp.json()
+            st.session_state.results = sim_data
     except Exception as e:
         st.error(f"Simulate API error: {e}")
         st.stop()
 
-    # expected keys: routes (after), cost_before, cost_after, disruption
-    routes_after = sim.get("routes") or sim.get("routes_after") or []
-    cost_before = sim.get("cost_before") or sim.get("cost") or 0
-    cost_after = sim.get("cost_after") or sim.get("updated_cost") or 0
-    disruption = sim.get("disruption", "unknown")
-    decision_details = sim.get("decision_details", "No decision details provided.")
 
-    st.subheader("Disruption Simulation Results")
-    st.warning(f"**Disruption Event:** {disruption}")
-    st.info(f"**Agent Decision & Rationale:** {decision_details}")
-    
-    st.metric("Cost before", f"{cost_before:.2f}")
-    st.metric("Cost after", f"{cost_after:.2f}", delta=f"{(cost_after-cost_before):+.2f}")
-    st.write("Routes (after disruption):")
-    st.json(routes_after)
-
-    if show_map:
-        # get previous routes if available from endpoint (some backends return routes_before)
-        routes_before = sim.get("routes_before") or []
-        m = plot_routes_on_map(
-            routes_before, 
-            routes_after, 
-            center=None, 
-            locations=sim.get("locations"), 
-            orders=sim.get("orders"),
-            depot_time_window=sim.get("depot_time_window")
-        )
-        folium_static(m, width=900, height=600)
-
-    # Display detailed route breakdown
-    locations = sim.get("locations", [])
-    display_route_details("Route Analysis (Before Disruption)", routes_before, locations)
-    display_route_details("Route Analysis (After Disruption)", routes_after, locations)
-
-    show_cost_charts(cost_before, cost_after)
+# --- Main Display Area ---
+if st.session_state.results:
+    display_results(st.session_state.results)
+else:
+    st.info("Click 'Run initial optimization' to begin.")
 
 st.markdown("---")
 st.markdown("Notes: This system uses Folium/OpenStreetMap for maps to avoid paid APIs. Ensure a production Kaggle dataset is placed at data/deliveries.csv (see README).")

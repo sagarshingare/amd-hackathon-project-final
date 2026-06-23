@@ -1,9 +1,9 @@
-from app.data.real_data import generate_distance_matrix
+from app.optimization.vrp_solver import build_distance_matrix
 
 class PlannerAgent:
     def plan_routes(self, network):
         locations = network["locations"]
-        distance_matrix = generate_distance_matrix(locations)
+        distance_matrix = build_distance_matrix(locations)
         return {
             "locations": locations,
             "orders": network["orders"],

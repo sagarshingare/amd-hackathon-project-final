@@ -1,26 +1,19 @@
 import copy
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 from app.data.real_data import generate_delivery_network
 from app.agents.orchestrator import OrchestratorAgent
 from app.ml.predict import DelayPredictor
+from app.session import create_session, save_state, load_state
 
 router = APIRouter()
-
-# Persist the current state for simulate flow
-state = {
-    "network": None,
-    "baseline_network": None,
-    "initial_result": None,
-    "predictor": DelayPredictor(),
-    "data_source": "NYC",
-}
 
 class OptimizeRequest(BaseModel):
     num_vehicles: int = 3
     vehicle_capacity: int = 150
     fuel_price: float = 1.0
+    driver_hourly_wage: float = 25.0
     num_orders: int = 10
     source: str = "NYC"
 
@@ -35,25 +28,32 @@ def format_routes(routes_indices, locations):
 
 @router.post("/optimize")
 def optimize(req: OptimizeRequest):
+    session_id = create_session()
+    predictor = DelayPredictor()
+
     network = generate_delivery_network(source=req.source, num_orders=req.num_orders)
     
     network["fleet"] = [{"vehicle_id": f"V{i}", "capacity": req.vehicle_capacity, "type": "truck"} for i in range(req.num_vehicles)]
     network["fuel_price"] = req.fuel_price
+    network["driver_cost_per_minute"] = req.driver_hourly_wage / 60.0
     
-    state["network"] = network
-    state["baseline_network"] = copy.deepcopy(network)
-    state["data_source"] = req.source
-
-    orchestrator = OrchestratorAgent(predictor=state["predictor"])
+    orchestrator = OrchestratorAgent(predictor=predictor)
     result = orchestrator.run_initial_optimization(network)
-    state["initial_result"] = result
+    
+    # Save the initial state for the simulation step
+    state_to_save = {
+        "baseline_network": copy.deepcopy(network),
+        "initial_result": result,
+    }
+    save_state(session_id, state_to_save)
 
     return {
+        "session_id": session_id,
         "locations": network["locations"],
         "depot_time_window": network.get("depot_time_window"),
-        "routes": format_routes(result["routes_before"], network["locations"]),
+        "routes": format_routes(result["cost_before"]["routes"], network["locations"]),
         "cost_before": result["cost_before"],
-        "cost_after": result["cost_before"],
+        "cost_after": result["cost_after"],
         "disruption": None,
         "summary": {
             "fleet_count": len(network["fleet"]),
@@ -66,27 +66,25 @@ def optimize(req: OptimizeRequest):
     }
 
 @router.get("/simulate")
-def simulate(scenario: Optional[str] = None):
-    if state["network"] is None:
-        network = generate_delivery_network()
-        state["network"] = network
-        state["baseline_network"] = copy.deepcopy(network)
-    else:
-        network = state["network"]
+def simulate(session_id: str, scenario: Optional[str] = None):
+    state = load_state(session_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Session not found or expired. Please run initial optimization again.")
 
-    if state["initial_result"] is None:
-        orchestrator = OrchestratorAgent(predictor=state["predictor"])
-        state["initial_result"] = orchestrator.run_initial_optimization(network)
+    # Use a deep copy to avoid modifying the original baseline state
+    network_for_disruption = copy.deepcopy(state["baseline_network"])
 
-    orchestrator = OrchestratorAgent(predictor=state["predictor"])
-    disruption_result = orchestrator.run_disruption_and_replan(network, scenario_name=scenario)
-    state["network"] = network
+    predictor = DelayPredictor()
+    orchestrator = OrchestratorAgent(predictor=predictor)
+    disruption_result = orchestrator.run_disruption_and_replan(network_for_disruption, scenario_name=scenario)
+
+    # No need to save state again unless we want a multi-step simulation
 
     return {
         "locations": state["baseline_network"]["locations"],
         "depot_time_window": state["baseline_network"].get("depot_time_window"),
         "routes_before": format_routes(state["initial_result"]["routes_before"], state["baseline_network"]["locations"]),
-        "routes_after": format_routes(disruption_result["routes_after"], state["baseline_network"]["locations"]),
+        "routes_after": format_routes(disruption_result["cost_after"]["routes"], state["baseline_network"]["locations"]),
         "cost_before": state["initial_result"]["cost_before"],
         "cost_after": disruption_result["cost_after"],
         "disruption": disruption_result["disruption_type"],

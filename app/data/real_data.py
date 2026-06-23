@@ -54,31 +54,6 @@ def load_dataset_from_csv(filepath=DATA_PATH, num_orders=10, num_vehicles=3, veh
     }
 
 
-def generate_distance_matrix(locations):
-    """
-    Calculate distance matrix using Haversine formula for real lat/lon coordinates.
-    """
-    size = len(locations)
-    matrix = [[0.0] * size for _ in range(size)]
-    
-    for i in range(size):
-        for j in range(size):
-            lat1, lon1 = locations[i]
-            lat2, lon2 = locations[j]
-            
-            # Haversine formula
-            R = 3959  # Earth radius in miles
-            dlat = math.radians(lat2 - lat1)
-            dlon = math.radians(lon2 - lon1)
-            a = (math.sin(dlat/2)**2 + 
-                 math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * 
-                 math.sin(dlon/2)**2)
-            c = 2 * math.asin(math.sqrt(a))
-            matrix[i][j] = R * c
-    
-    return matrix
-
-
 def generate_delivery_network(source="NYC", num_orders=10, num_vehicles=3, vehicle_capacity=150):
     """
     Load a delivery network from production CSV data.

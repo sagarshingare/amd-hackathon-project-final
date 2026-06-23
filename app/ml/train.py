@@ -2,8 +2,9 @@ import os
 import pickle
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.model_selection import train_test_split
+import xgboost as xgb
+from sklearn.model_selection import train_test_split # Ensure this is imported
+from xgboost.callback import EarlyStopping # Re-add this import
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "delay_model.pkl")
@@ -20,9 +21,16 @@ def train_delay_model():
     
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     
-    print("Training Optimized RandomForestRegressor...")
-    model = RandomForestRegressor(n_estimators=100, max_depth=10, random_state=42, n_jobs=-1)
-    model.fit(X_train, y_train)
+    print("Training Optimized XGBoost Regressor...")
+    model = xgb.XGBRegressor(objective='reg:squarederror',
+                             n_estimators=1000,
+                             learning_rate=0.05,
+                             max_depth=5,
+                             subsample=0.8,
+                             colsample_bytree=0.8,
+                             random_state=42,
+                             n_jobs=-1)
+    model.fit(X_train, y_train, eval_set=[(X_test, y_test)], callbacks=[EarlyStopping(rounds=50, save_best=True)], verbose=False)
     
     predictions = model.predict(X_test)
     print("\n--- Model Evaluation Metrics ---")

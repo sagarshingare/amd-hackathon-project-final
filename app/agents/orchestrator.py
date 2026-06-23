@@ -1,6 +1,5 @@
 from app.agents.planner import PlannerAgent
 from app.agents.optimizer import OptimizerAgent
-from app.agents.disruption import DisruptionAgent
 from app.agents.replanner import ReplanningAgent
 import random
 
@@ -16,17 +15,15 @@ class OrchestratorAgent:
     def __init__(self, predictor):
         self.planner = PlannerAgent()
         self.optimizer = OptimizerAgent(predictor=predictor)
-        self.disruptor = DisruptionAgent()
-        self.replanner = ReplanningAgent()
+        self.replanner = ReplanningAgent(predictor=predictor)
 
     def run_initial_optimization(self, network):
         plan = self.planner.plan_routes(network)
         optimized = self.optimizer.optimize(network)
         return {
             "routes_before": optimized["routes"],
-            "routes_after": optimized["routes"],
-            "cost_before": optimized["total_cost"],
-            "cost_after": optimized["total_cost"],
+            "cost_before": optimized, # Return the full cost dictionary
+            "cost_after": optimized,
             "fuel_price_before": network["fuel_price"],
             "fuel_price_after": network["fuel_price"],
             "delay_multiplier": network.get("delay_factor", 1.0),
@@ -43,12 +40,12 @@ class OrchestratorAgent:
         network["delay_factor"] = network.get("delay_factor", 1.0) * scenario["delay"]
         network["fuel_price"] = network.get("fuel_price", 1.0) * scenario["fuel"]
         
-        # Re-run optimization with the newly constrained network
+        # Delegate to the ReplanningAgent
         reoptimized = self.replanner.replan(network)
 
         return {
             "routes_after": reoptimized["routes"],
-            "cost_after": reoptimized["total_cost"],
+            "cost_after": reoptimized, # Return the full cost dictionary
             "fuel_price_after": network["fuel_price"],
             "delay_multiplier": network["delay_factor"],
             "disruption_type": scenario["type"],
